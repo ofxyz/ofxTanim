@@ -1,17 +1,14 @@
 #include "ofMain.h"
 #include "ofApp.h"
 
-//========================================================================
-int main( ){
+int main() {
+    ofGLFWWindowSettings settings;
+    settings.setSize(1600, 1000);
+    settings.windowMode = OF_WINDOW;
+    settings.resizable  = true;
+    settings.title      = "ofxTanim – Minimal";
 
-	//Use ofGLFWWindowSettings for more options like multi-monitor fullscreen
-	ofGLWindowSettings settings;
-	settings.setSize(1024, 768);
-	settings.windowMode = OF_WINDOW; //can also be OF_FULLSCREEN
-
-	auto window = ofCreateWindow(settings);
-
-	ofRunApp(window, std::make_shared<ofApp>());
-	ofRunMainLoop();
-
+    auto window = ofCreateWindow(settings);
+    ofRunApp(window, std::make_shared<ofApp>());
+    ofRunMainLoop();
 }

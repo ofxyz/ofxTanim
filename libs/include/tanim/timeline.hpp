@@ -10,6 +10,7 @@
 
 #include <imgui_internal.h>
 #include <algorithm>
+#include <cmath>
 #include <entt/entt.hpp>
 
 namespace tanim::internal
@@ -38,7 +39,17 @@ public:
 
     static size_t GetCustomHeight(const TimelineData& data, int index)
     {
-        return data.m_sequences.at(index).m_expanded ? 200 : 0;
+        const auto& seq = data.m_sequences.at(index);
+        if (!seq.m_expanded)
+        {
+            return 0;
+        }
+        // Match row height used in CustomDraw() so the expanded lane fits all curve labels.
+        const float row_h   = ImGui::GetTextLineHeightWithSpacing();
+        const float extra_h = 8.0f;
+        const int   n_curve = ImMax(1, seq.GetCurveCount());
+        const float h       = row_h * static_cast<float>(n_curve) + extra_h;
+        return static_cast<size_t>(std::ceil(static_cast<double>(ImMax(120.0f, h))));
     }
 
     static void DoubleClick(TimelineData& data, int seq_idx)
@@ -63,20 +74,29 @@ public:
         draw_list->PushClipRect(legend_clipping_rect.Min, legend_clipping_rect.Max, true);
 
         Sequence& seq = data.m_sequences.at(seq_idx);
+        const float row_h =
+            ImMax(ImGui::GetTextLineHeightWithSpacing(), ImGui::GetFontSize() + ImGui::GetStyle().ItemSpacing.y);
+        const float pad_x   = ImGui::GetStyle().FramePadding.x + 2.0f;
+        const float swatch_sz = ImMax(9.0f, std::floor(ImGui::GetFontSize() * 0.72f));
+        const float text_gap  = 6.0f;
+        const float swatch_x    = legend_rect.Min.x + pad_x;
+        const float text_base_x = swatch_x + swatch_sz + text_gap;
+
         for (int curve_idx = 0; curve_idx < seq.GetCurveCount(); curve_idx++)
         {
-            ImVec2 pta(legend_rect.Min.x + 30, legend_rect.Min.y + static_cast<float>(curve_idx) * 14.f);
-            ImVec2 ptb(legend_rect.Max.x, legend_rect.Min.y + static_cast<float>(curve_idx + 1) * 14.f);
+            const float y0 = legend_rect.Min.y + static_cast<float>(curve_idx) * row_h;
+            const float y1 = y0 + row_h;
+            ImVec2      pta(legend_rect.Min.x + pad_x, y0);
+            ImVec2      ptb(legend_rect.Max.x, y1);
 
             const ImU32 color = Sequence::GetCurveColor(curve_idx);
-            constexpr float color_box_size = 10.f;
-            const float font_height = ImGui::GetFontSize();
-            const float vertical_offset = (font_height - color_box_size) * 0.5f;
-            ImVec2 color_min(pta.x, pta.y + vertical_offset);
-            ImVec2 color_max(pta.x + color_box_size, pta.y + vertical_offset + color_box_size);
+            const float box_y = y0 + std::floor((row_h - swatch_sz) * 0.5f);
+            ImVec2      color_min(swatch_x, box_y);
+            ImVec2      color_max(swatch_x + swatch_sz, box_y + swatch_sz);
             draw_list->AddRectFilled(color_min, color_max, color);
 
-            ImVec2 text_pos(pta.x + 14.f, pta.y);
+            const float text_y = y0 + std::floor((row_h - ImGui::GetFontSize()) * 0.5f);
+            ImVec2      text_pos(text_base_x, text_y);
             draw_list->AddText(text_pos,
                                seq.GetCurveVisibility(curve_idx) ? 0xFFFFFFFF : 0x80FFFFFF,
                                seq.m_curves.at(curve_idx).m_name.c_str());
