@@ -21,6 +21,8 @@ common:
 	# in addons.make, so standalone ofxTanim apps are unaffected.
 	ADDON_SOURCES += src/kit/AnimationBridge.cpp
 	ADDON_SOURCES += src/kit/ofxAnimationKit.cpp
+	ADDON_SOURCES += src/kit/TanimEditorSystem.cpp
 
 	ADDON_INCLUDES += src
+	ADDON_INCLUDES += src/kit
 	ADDON_INCLUDES += libs/include

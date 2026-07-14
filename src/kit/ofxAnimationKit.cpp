@@ -72,6 +72,14 @@ void AnimationKit::registerWith(ofkitty::Runtime& runtime, const Options& opts)
             {.visible = vis, .id = "ofxanimationkit.window.timeline"}));
     }
 
+    if (opts.registerEditorSystem && !m_systemRegistered) {
+        runtime.registerSystem(m_editorSystem, {
+            .update    = false,
+            .drawPhase = ofkitty::system_phase::gui,
+        });
+        m_systemRegistered = true;
+    }
+
     m_registered = true;
 }
 

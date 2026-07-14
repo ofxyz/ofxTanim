@@ -168,11 +168,10 @@ void ofApp::setup() {
 animated entities from timeline data. Kit apps must **not** define those
 overrides themselves.
 
-Each frame (after ImGui `NewFrame`, before `EndFrame`):
-
-```cpp
-tanim::UpdateEditor(ofGetLastFrameTime());
-```
+`registerWith()` also registers a **gui-phase** `TanimEditorSystem` on the
+ofxKit Runtime (`drawPhase = "gui"`), which calls `tanim::UpdateEditor(dt)`
+while the ImGui frame is open — no per-frame app call needed. Toggle it from
+the Debug window's Systems list (`system().setEnabled`).
 
 Register animatable components with `tanim::RegisterComponent<T>()` and wire
 `inspector::registerProperties<T>` in ofxEnTTInspector before opening a

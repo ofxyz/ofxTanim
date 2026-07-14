@@ -14,6 +14,7 @@
 // ============================================================================
 
 #include "AnimationBridge.h"
+#include "TanimEditorSystem.h"
 #include "Runtime.h"
 #include "ViewWindow.h"
 
@@ -25,6 +26,7 @@ public:
         bool registerTimelineWindow {true};
         bool windowVisible          {false};
         bool installTanimHooks      {true};
+        bool registerEditorSystem   {true}; ///< Gui-phase tanim::UpdateEditor system
     };
 
     // Two overloads instead of a default argument — GCC rejects nested-class
@@ -41,9 +43,11 @@ private:
     void ensureTanimInitialized();
     void drawTimelineWindow(bool& visible);
 
-    AnimationBridge m_bridge;
-    bool            m_tanimInitialized {false};
-    bool            m_registered       {false};
+    AnimationBridge    m_bridge;
+    TanimEditorSystem  m_editorSystem;
+    bool               m_tanimInitialized {false};
+    bool               m_registered       {false};
+    bool               m_systemRegistered {false};
 };
 
 } // namespace ofxAnimationKit
