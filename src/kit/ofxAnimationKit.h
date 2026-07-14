@@ -27,7 +27,10 @@ public:
         bool installTanimHooks      {true};
     };
 
-    void registerWith(ofkitty::Runtime& runtime, const Options& opts = {});
+    // Two overloads instead of a default argument — GCC rejects nested-class
+    // NSDMI defaults in enclosing-class member declarations.
+    void registerWith(ofkitty::Runtime& runtime);
+    void registerWith(ofkitty::Runtime& runtime, const Options& opts);
 
     AnimationBridge&       bridge()       { return m_bridge; }
     const AnimationBridge& bridge() const { return m_bridge; }

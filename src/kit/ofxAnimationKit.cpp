@@ -51,6 +51,11 @@ void AnimationKit::drawTimelineWindow(bool& visible)
     ImGui::End();
 }
 
+void AnimationKit::registerWith(ofkitty::Runtime& runtime)
+{
+    registerWith(runtime, Options{});
+}
+
 void AnimationKit::registerWith(ofkitty::Runtime& runtime, const Options& opts)
 {
     m_bridge.bindRegistry(runtime.registry());
