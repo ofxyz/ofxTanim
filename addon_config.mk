@@ -16,5 +16,11 @@ common:
 	ADDON_SOURCES += src/tanim.cpp
 	ADDON_SOURCES += src/timeliner.cpp
 
+	# Optional ofxKit glue (ofxAnimationKit). Guarded by
+	# __has_include("Runtime.h") — compiles to empty TUs unless ofxKit is
+	# in addons.make, so standalone ofxTanim apps are unaffected.
+	ADDON_SOURCES += src/kit/AnimationBridge.cpp
+	ADDON_SOURCES += src/kit/ofxAnimationKit.cpp
+
 	ADDON_INCLUDES += src
 	ADDON_INCLUDES += libs/include

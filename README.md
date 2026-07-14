@@ -140,3 +140,41 @@ bool playing = tanim::IsPlaying(cdata);
 std::string json = tanim::Serialize(tdata);
 tanim::Deserialize(tdata, json);
 ```
+
+---
+
+## ofxKit integration (src/kit/)
+
+`src/kit/` ships **ofxAnimationKit** — glue for running Tanim inside an
+[ofxKit](../ofxKit) runtime (like `ofxBulletKit.h` inside ofxBullet). The
+sources are guarded by `__has_include("Runtime.h")` and compile to empty
+translation units unless ofxKit is in `addons.make`, so standalone ofxTanim
+apps are unaffected.
+
+```cpp
+#include "kit/ofxAnimationKit.h"
+
+ofxAnimationKit::AnimationKit m_animKit;
+
+void ofApp::setup() {
+    m_animKit.registerWith(ofkitty::runtime());
+    m_animKit.bridge().bindRegistry(ofkitty::runtime().registry());
+    m_animKit.bridge().registerUid("entity.cube", myEntity);
+}
+```
+
+`AnimationBridge` owns the uid → `entt::entity` map and supplies
+`tanim::FindEntityOfUID` (plus `LogError` / `LogInfo`) so Tanim can resolve
+animated entities from timeline data. Kit apps must **not** define those
+overrides themselves.
+
+Each frame (after ImGui `NewFrame`, before `EndFrame`):
+
+```cpp
+tanim::UpdateEditor(ofGetLastFrameTime());
+```
+
+Register animatable components with `tanim::RegisterComponent<T>()` and wire
+`inspector::registerProperties<T>` in ofxEnTTInspector before opening a
+timeline. `registerWith()` also registers a dockable "Timeline" window
+(placeholder host; `tanim::Draw()` hosting is a future revision).
