@@ -3,6 +3,7 @@
 #include <imgui.h>
 #include <magic_enum/magic_enum.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 

@@ -31,24 +31,30 @@
 #include "tanim/helpers.hpp"
 #include "tanim/tanim_user.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace tanim::internal
 {
 
 static bool TimelinerAddDelButton(ImDrawList* draw_list, ImVec2 pos, bool add = true)
 {
     const ImGuiIO& io = ImGui::GetIO();
-    ImRect btn_rect(pos, ImVec2(pos.x + 16, pos.y + 16));
+    const float sc = ImGui::GetFontSize() / 13.0f;
+    const float sz = std::roundf(16.0f * sc);
+    ImRect btn_rect(pos, ImVec2(pos.x + sz, pos.y + sz));
     const bool over_btn = btn_rect.Contains(io.MousePos);
     const bool contained_click = over_btn && btn_rect.Contains(io.MouseClickedPos[0]);
     const bool clicked_btn = contained_click && io.MouseReleased[0];
     const unsigned int btn_color = over_btn ? 0xAAEAFFAA : 0x77A3B2AA;
     if (contained_click && io.MouseDownDuration[0] > 0) btn_rect.Expand(2.0f);
 
-    const float mid_y = pos.y + 16.0f / 2.0f - 0.5f;
-    const float mid_x = pos.x + 16.0f / 2.0f - 0.5f;
+    const float mid_y = pos.y + sz / 2.0f - 0.5f;
+    const float mid_x = pos.x + sz / 2.0f - 0.5f;
+    const float pad   = std::roundf(3.0f * sc);
     draw_list->AddRect(btn_rect.Min, btn_rect.Max, btn_color, 4);
-    draw_list->AddLine(ImVec2(btn_rect.Min.x + 3, mid_y), ImVec2(btn_rect.Max.x - 3, mid_y), btn_color, 2);
-    if (add) draw_list->AddLine(ImVec2(mid_x, btn_rect.Min.y + 3), ImVec2(mid_x, btn_rect.Max.y - 3), btn_color, 2);
+    draw_list->AddLine(ImVec2(btn_rect.Min.x + pad, mid_y), ImVec2(btn_rect.Max.x - pad, mid_y), btn_color, 2);
+    if (add) draw_list->AddLine(ImVec2(mid_x, btn_rect.Min.y + pad), ImVec2(mid_x, btn_rect.Max.y - pad), btn_color, 2);
     return clicked_btn;
 }
 
@@ -63,16 +69,20 @@ bool Timeliner(TimelineData& data,
     ImGuiIO& io = ImGui::GetIO();
     int cx = static_cast<int>(io.MousePos.x);
     int cy = static_cast<int>(io.MousePos.y);
+
+    // Scale all pixel dimensions relative to ImGui's default 13 px font so the
+    // timeliner remains readable at any font size / DPI setting.
+    const float sc = ImGui::GetFontSize() / 13.0f;
+
     static float frame_pixel_width = 10.f;
     static float frame_pixel_width_target = 10.f;
-    int legend_width = 300;
 
     static int moving_entry = -1;
     static int moving_pos = -1;
     static int moving_part = -1;
     int del_entry = -1;
     // int dup_entry = -1;
-    int item_height = 20;
+    const int item_height = static_cast<int>(20.0f * sc);
 
     bool popup_opened = false;
     int sequence_count = Timeline::GetSequenceCount(data);
@@ -83,6 +93,31 @@ bool Timeliner(TimelineData& data,
     ImVec2 canvas_pos = ImGui::GetCursorScreenPos();      // ImDrawList API uses screen coordinates!
     ImVec2 canvas_size = ImGui::GetContentRegionAvail();  // Resize canvas to what's available
     int first_frame_used = first_frame ? *first_frame : 0;
+
+    // Legend column width: draggable splitter in expanded timeliner. Static persists across frames.
+    static float s_timeliner_legend_px = -1.f;
+    static bool s_timeliner_legend_split_drag = false;
+
+    const float legend_min = std::max(92.0f * sc, static_cast<float>(item_height + 48));
+    const float legend_ideal = 168.0f * sc;
+    const float legend_drag_max = std::max(legend_min + 120.0f * sc, 520.0f * sc);
+    const float timeline_min_px = std::max(96.0f * sc, 72.0f);
+    const float by_panel = canvas_size.x * 0.34f;
+
+    auto reclampLegend = [&]() {
+        const float mx = std::max(legend_min, canvas_size.x - timeline_min_px);
+        const float hi = std::min(legend_drag_max, mx);
+        const float defaults =
+            ImClamp(std::min(legend_ideal, std::max(legend_min, by_panel)), legend_min, hi);
+        if (s_timeliner_legend_px < 0.f)
+        {
+            s_timeliner_legend_px = defaults;
+        }
+        s_timeliner_legend_px = ImClamp(s_timeliner_legend_px, legend_min, hi);
+    };
+    reclampLegend();
+
+    int legend_width = static_cast<int>(std::lround(s_timeliner_legend_px));
 
     int controlHeight = sequence_count * item_height;
     for (int i = 0; i < sequence_count; i++) controlHeight += static_cast<int>(Timeline::GetCustomHeight(data, i));
@@ -100,37 +135,12 @@ bool Timeliner(TimelineData& data,
     };
     ImVector<CustomDraw> custom_draws;
     ImVector<CustomDraw> compact_custom_draws;
-    // zoom in/out
-    const int visible_frame_count = static_cast<int>(floorf((canvas_size.x - legend_width) / frame_pixel_width));
-    const float bar_width_ratio = ImMin(visible_frame_count / static_cast<float>(frame_count), 1.f);
-    const float bar_width_in_pixels = bar_width_ratio * (canvas_size.x - legend_width);
 
     ImRect region_rect(canvas_pos, canvas_pos + canvas_size);
 
-    static bool panning_view = false;
-    static ImVec2 panning_view_source;
-    static int panning_view_frame;
-    if (ImGui::IsWindowFocused() && io.KeyAlt && io.MouseDown[2])
-    {
-        if (!panning_view)
-        {
-            panning_view_source = io.MousePos;
-            panning_view = true;
-            panning_view_frame = *first_frame;
-        }
-        *first_frame = panning_view_frame - static_cast<int>((io.MousePos.x - panning_view_source.x) / frame_pixel_width);
-        *first_frame = ImClamp(*first_frame, Timeline::GetMinFrame(data), Timeline::GetMaxFrame(data) - visible_frame_count);
-    }
-    if (panning_view && !io.MouseDown[2])
-    {
-        panning_view = false;
-    }
     frame_pixel_width_target = ImClamp(frame_pixel_width_target, 0.1f, 50.f);
 
     frame_pixel_width = ImLerp(frame_pixel_width, frame_pixel_width_target, 0.33f);
-
-    frame_count = Timeline::GetMaxFrame(data) - Timeline::GetMinFrame(data);
-    if (visible_frame_count >= frame_count && first_frame) *first_frame = Timeline::GetMinFrame(data);
 
     // --
     if (expanded && !*expanded)
@@ -139,7 +149,7 @@ bool Timeliner(TimelineData& data,
         draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_size.x + canvas_pos.x, canvas_pos.y + item_height), 0xFF3D3837, 0);
         char tmps[512];
         ImFormatString(tmps, IM_ARRAYSIZE(tmps), Timeline::GetName(data).c_str(), frame_count, sequence_count);
-        draw_list->AddText(ImVec2(canvas_pos.x + 26, canvas_pos.y + 2), 0xFFFFFFFF, tmps);
+        draw_list->AddText(ImVec2(canvas_pos.x + std::roundf(26.0f * sc), canvas_pos.y + 2), 0xFFFFFFFF, tmps);
     }
     else
     {
@@ -153,7 +163,77 @@ bool Timeliner(TimelineData& data,
         */
         // test scroll area
         ImVec2 header_size(canvas_size.x, static_cast<float>(item_height));
-        ImVec2 scroll_bar_size(canvas_size.x, 14.f);
+        ImVec2 scroll_bar_size(canvas_size.x, std::roundf(14.0f * sc));
+
+        const float splitter_max_y = canvas_pos.y + canvas_size.y - (has_scroll_bar ? scroll_bar_size.y : 0.f);
+        const float splitter_half_w = std::max(3.0f, 5.0f * sc);
+        ImRect legend_split_hit(ImVec2(canvas_pos.x + static_cast<float>(legend_width) - splitter_half_w, canvas_pos.y),
+                                ImVec2(canvas_pos.x + static_cast<float>(legend_width) + splitter_half_w, splitter_max_y));
+        const bool legend_split_hover =
+            legend_split_hit.Contains(io.MousePos) && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup);
+        const bool block_legend_split =
+            (moving_entry >= 0) || moving_scroll_bar || moving_current_frame;
+
+        if (block_legend_split)
+        {
+            s_timeliner_legend_split_drag = false;
+        }
+        else if (s_timeliner_legend_split_drag)
+        {
+            if (!io.MouseDown[0])
+            {
+                s_timeliner_legend_split_drag = false;
+            }
+            else
+            {
+                s_timeliner_legend_px += io.MouseDelta.x;
+                reclampLegend();
+                legend_width = static_cast<int>(std::lround(s_timeliner_legend_px));
+            }
+        }
+        else if (legend_split_hover && io.MouseClicked[0])
+        {
+            s_timeliner_legend_split_drag = true;
+        }
+
+        const bool splitter_draw_hot = legend_split_hover || s_timeliner_legend_split_drag;
+        if (!block_legend_split && splitter_draw_hot)
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        }
+
+        const int visible_frame_count = static_cast<int>(floorf((canvas_size.x - legend_width) / frame_pixel_width));
+        const float bar_width_ratio = ImMin(visible_frame_count / static_cast<float>(frame_count), 1.f);
+        const float bar_width_in_pixels = bar_width_ratio * (canvas_size.x - legend_width);
+
+        static bool panning_view = false;
+        static ImVec2 panning_view_source;
+        static int panning_view_frame;
+        if (ImGui::IsWindowFocused() && io.KeyAlt && io.MouseDown[2])
+        {
+            if (!panning_view)
+            {
+                panning_view_source = io.MousePos;
+                panning_view = true;
+                panning_view_frame = *first_frame;
+            }
+            *first_frame = panning_view_frame -
+                           static_cast<int>((io.MousePos.x - panning_view_source.x) / frame_pixel_width);
+            *first_frame = ImClamp(*first_frame,
+                                    Timeline::GetMinFrame(data),
+                                    Timeline::GetMaxFrame(data) - visible_frame_count);
+        }
+        if (panning_view && !io.MouseDown[2])
+        {
+            panning_view = false;
+        }
+
+        frame_count = Timeline::GetMaxFrame(data) - Timeline::GetMinFrame(data);
+        if (visible_frame_count >= frame_count && first_frame)
+        {
+            *first_frame = Timeline::GetMinFrame(data);
+        }
+
         ImGui::InvisibleButton("topBar", header_size);
         draw_list->AddRectFilled(canvas_pos, canvas_pos + header_size, 0xFFFF0000, 0);
         ImVec2 child_frame_pos = ImGui::GetCursorScreenPos();
@@ -291,7 +371,12 @@ bool Timeliner(TimelineData& data,
         for (int i = 0; i < sequence_count; i++)
         {
             ImVec2 tpos(content_min.x + 3, content_min.y + i * item_height + 2 + custom_height);
+            const float del_btn_x = content_min.x + static_cast<float>(legend_width - item_height + 2 - 10);
+            draw_list->PushClipRect(ImVec2(content_min.x, tpos.y - 1.0f),
+                                    ImVec2(del_btn_x - 2.0f, tpos.y + static_cast<float>(item_height) + 2.0f),
+                                    true);
             draw_list->AddText(tpos, 0xFFFFFFFF, Timeline::GetSequenceLabel(data, i).c_str());
+            draw_list->PopClipRect();
 
             if (timeliner_flags & TIMELINER_DELETE_SEQUENCE)
             {
@@ -433,10 +518,9 @@ bool Timeliner(TimelineData& data,
                                      rp + ImVec2(canvas_size.x, static_cast<float>(local_custom_height + item_height)));
 
                 ImRect legend_rect(rp + ImVec2(0.f, static_cast<float>(item_height)),
-                                   rp + ImVec2(static_cast<float>(legend_width), static_cast<float>(local_custom_height)));
-                ImRect legend_clipping_rect(canvas_pos + ImVec2(0.f, static_cast<float>(item_height)),
-                                            canvas_pos + ImVec2(static_cast<float>(legend_width),
-                                                                static_cast<float>(local_custom_height + item_height)));
+                                   rp + ImVec2(static_cast<float>(legend_width),
+                                               static_cast<float>(item_height + local_custom_height)));
+                ImRect legend_clipping_rect(legend_rect.Min, legend_rect.Max);
                 custom_draws.push_back({i, custom_rect, legend_rect, clipping_rect, legend_clipping_rect});
             }
             else
@@ -582,6 +666,15 @@ bool Timeliner(TimelineData& data,
             }
         }
         //
+
+        const ImU32 splitter_col =
+            splitter_draw_hot ? IM_COL32(215, 225, 255, 235) : IM_COL32(120, 128, 150, 165);
+        const float split_draw_x =
+            std::floor(canvas_pos.x + static_cast<float>(legend_width)) + 0.5f;
+        draw_list->AddLine(ImVec2(split_draw_x, canvas_pos.y),
+                           ImVec2(split_draw_x, splitter_max_y),
+                           splitter_col,
+                           splitter_draw_hot ? 2.0f : 1.0f);
 
         ImGui::EndChild();
         ImGui::PopStyleColor();

@@ -12,8 +12,21 @@
 #include "ImHelpers.h"
 #include "tanim/registry.hpp"
 #include "tanim/sequence_id.hpp"
+#include "ComponentInspector.h"
+#include <imgui_internal.h>
 
 namespace {
+
+void clearImGuiDockNodeResizeLocks(ImGuiDockNode* node)
+{
+    if (node == nullptr) return;
+    constexpr ImGuiDockNodeFlags kResizeLockMask =
+        ImGuiDockNodeFlags_NoResize | ImGuiDockNodeFlags_NoResizeX | ImGuiDockNodeFlags_NoResizeY;
+    node->LocalFlags &= ~kResizeLockMask;
+    node->UpdateMergedFlags();
+    clearImGuiDockNodeResizeLocks(node->ChildNodes[0]);
+    clearImGuiDockNodeResizeLocks(node->ChildNodes[1]);
+}
 
 struct DemoAnimComponent {
     glm::vec3 position{0.0f, 0.0f, 0.0f};
@@ -56,7 +69,7 @@ tanim::internal::Sequence* addSequenceByField(entt::registry& registry,
                                                const std::string& fieldName) {
     const std::size_t beforeCount = timelineData.m_sequences.size();
     const auto& components = tanim::internal::GetRegistry().GetComponents();
-    const std::string structName = tanim::internal::GetStructName<DemoAnimComponent>();
+    const std::string structName = "DemoAnimComponent";
 
     for (const auto& component : components) {
         if (component.m_struct_name != structName) {
@@ -138,8 +151,15 @@ void configureBangPulseSequence(tanim::internal::Sequence& seq) {
 
 }  // namespace
 
-VISITABLE_STRUCT(DemoAnimComponent, position, rotation, toggle, bangPulse);
-TANIM_REFLECT_NO_REGISTER(DemoAnimComponent, position, rotation, toggle, bangPulse);
+// Register animatable fields once. This specialization is shared by the
+// Inspector UI, Tanim, and ofxEnTTStateCollector.
+template<>
+inline void inspector::registerProperties(DemoAnimComponent& c, inspector::ComponentInspector& ci) {
+    ci.addProperty("position", &c.position, -1000.f, 1000.f);
+    ci.addProperty("rotation", &c.rotation, -360.f,  360.f);
+    ci.addProperty("toggle",   &c.toggle);
+    ci.addProperty("bangPulse",&c.bangPulse);
+}
 
 namespace tanim {
 
@@ -189,7 +209,7 @@ void SurfingTimelineManager::setup(const std::string& imguiIniPath) {
     imguiIniPath_ = imguiIniPath;
 
     tanim::Init();
-    tanim::RegisterComponent<DemoAnimComponent>();
+    tanim::RegisterComponent<DemoAnimComponent>("DemoAnimComponent");
 
     if (!imguiIniPath_.empty()) {
         ImGui::GetIO().IniFilename = imguiIniPath_.c_str();
@@ -230,9 +250,8 @@ void SurfingTimelineManager::drawControlsAndTimeline() {
         return;
     }
 
-    ImGui::SetNextWindowPos(ImVec2(24.0f, 90.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(420.0f, 420.0f), ImGuiCond_FirstUseEver);
-    ImGui::Begin("SurfingTimelineManager");
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 480.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Timeline Controls");
 
     ImGui::Text("Auto-bridge ofParameter <-> Timeline");
     ImGui::Separator();
@@ -242,6 +261,10 @@ void SurfingTimelineManager::drawControlsAndTimeline() {
 
     if (ImGui::Button("Open Timeline Editor")) {
         tanim::OpenForEditing(registry_, entityDatas_, timelineData_, componentData_);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset Layout")) {
+        tanim::ResetEditorLayout();
     }
 
     if (!isPlayMode_) {
@@ -299,12 +322,12 @@ void SurfingTimelineManager::drawControlsAndTimeline() {
 
     ImGui::End();
 
-    tanim::Draw();
-
     if (pendingLateIniReload_ && !imguiIniPath_.empty()) {
         ImGui::LoadIniSettingsFromDisk(imguiIniPath_.c_str());
         pendingLateIniReload_ = false;
     }
+
+    tanim::Draw();
 }
 
 void SurfingTimelineManager::exit() {
@@ -775,69 +798,279 @@ bool SurfingTimelineManager::hasSceneEntity() const {
     return registry_.valid(animatedEntity_) && registry_.all_of<DemoAnimComponent>(animatedEntity_);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ofApp
+// ─────────────────────────────────────────────────────────────────────────────
+
+float ofApp::computeUiScale() const {
+    // Use DisplayFramebufferScale set by the GLFW backend (reliable on all
+    // platforms including HiDPI Windows and Retina macOS).
+    // Falls back to 1.0 before the first ImGui frame.
+    const float s = ImGui::GetIO().DisplayFramebufferScale.x;
+    return (s > 0.1f) ? s : 1.0f;
+}
+
+void ofApp::setupImGui() {
+    // Docking only: popped-out Dear ImGui OS windows render in GLFW contexts where the
+    // viewport's FBO texture may not bind correctly; see ImGui_ImplGlfw_CreateWindow + share contexts.
+    gui_.setup(nullptr, true, ImGuiConfigFlags_DockingEnable);
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigWindowsMoveFromTitleBarOnly = true;
+
+    // Load the default font at 15 px — crisp at 1080p and readable at 4K.
+    // On HiDPI displays the GLFW backend scales the framebuffer automatically;
+    // we intentionally avoid ScaleAllSizes() to prevent double-scaling.
+    ImFontConfig cfg;
+    cfg.SizePixels = 15.0f;
+    io.Fonts->Clear();
+    io.Fonts->AddFontDefault(&cfg);
+    io.Fonts->Build();
+
+    // Easier to grab dock splitters; complements clearing NoResize flags on nodes (see beginDockSpace).
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.DockingSeparatorSize = std::max(style.DockingSeparatorSize, 5.0f);
+}
+
+void ofApp::resizeViewport(int w, int h) {
+    if (w < 2 || h < 2) return;
+    viewportSize_ = glm::vec2(static_cast<float>(w), static_cast<float>(h));
+    ofFbo::Settings s;
+    s.width          = w;
+    s.height         = h;
+    s.useDepth       = true;
+    s.internalformat = GL_RGBA;
+    s.textureTarget  = GL_TEXTURE_2D;
+    s.numSamples     = 0;
+    viewport_.allocate(s);
+    camera_.setAspectRatio(static_cast<float>(w) / static_cast<float>(h));
+}
+
 void ofApp::setup() {
     ofSetLogLevel(OF_LOG_NOTICE);
     ofSetVerticalSync(true);
+    ofSetFrameRate(60);
 
-    gui_.setup(nullptr, true, ImGuiConfigFlags_ViewportsEnable | ImGuiConfigFlags_DockingEnable);
+    // ofFbo and ImGui both need normalised (0-1) UVs, which requires
+    // GL_TEXTURE_2D.  Disable the OpenGL-extension ARB rectangle textures
+    // globally so every subsequent ofFbo/ofTexture allocation uses 2D.
+    ofDisableArbTex();
+
+    setupImGui();
+
     camera_.setDistance(550.0f);
     camera_.setNearClip(0.1f);
     camera_.setFarClip(6000.0f);
 
-    setupParameters();
+    resizeViewport(ofGetWidth(), ofGetHeight());
 
+    setupParameters();
     timelineManager_.addParameters(parameters_);
     timelineManager_.setBoolToggleCallback(
-        [this](const std::string& parameterName, bool value) { onBoolToggle(parameterName, value); });
-    timelineManager_.setBangCallback([this](const std::string& parameterName) { onBang(parameterName); });
+        [this](const std::string& n, bool v) { onBoolToggle(n, v); });
+    timelineManager_.setBangCallback(
+        [this](const std::string& n) { onBang(n); });
     timelineManager_.setup(ofToDataPath("imgui.ini", true));
 }
 
 void ofApp::update() {
     timelineManager_.update(ofGetLastFrameTime());
-    const float dt = static_cast<float>(ofGetLastFrameTime());
-    bangFlash_ = (std::max)(0.0f, bangFlash_ - dt * 2.8f);
+    bangFlash_ = std::max(0.0f, bangFlash_ - static_cast<float>(ofGetLastFrameTime()) * 2.8f);
 }
 
 void ofApp::draw() {
-    const ofColor topBg(20, 24, 32);
-    const ofColor bottomBg(8, 10, 14);
-    ofBackgroundGradient(topBg, bottomBg, OF_GRADIENT_LINEAR);
-
-    drawScene3d();
+    ofBackground(ofColor(15, 18, 26));
 
     gui_.begin();
+    beginDockSpace();
+    drawViewportWindow();
     timelineManager_.drawControlsAndTimeline();
-
-    ImGui::SetNextWindowPos(ImVec2(24.0f, 540.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(420.0f, 150.0f), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Callbacks");
-    ImGui::Text("Last bool event: %s", lastBoolEvent_.c_str());
-    ImGui::Text("Last bang event: %s", lastBangEvent_.c_str());
-    ImGui::Text("Bang count: %llu", static_cast<unsigned long long>(bangCounter_));
-    ImGui::End();
-
+    drawCallbacksWindow();
     gui_.end();
 }
 
 void ofApp::exit() { timelineManager_.exit(); }
 
+void ofApp::windowResized(int w, int h) {
+    (void)w;
+    (void)h;
+    // Do not clamp ImGui-measured dock sizes against pixel `w`,`h`: they mix logical vs framebuffer
+    // units and corrupt layout. Dock + FBO extents are rebuilt from `GetContentRegionAvail()` each frame.
+}
+
+// ─── DockSpace ───────────────────────────────────────────────────────────────
+void ofApp::beginDockSpace() {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,   0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(0.0f, 0.0f));
+
+    constexpr ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoDocking             |
+        ImGuiWindowFlags_NoTitleBar            |
+        ImGuiWindowFlags_NoCollapse            |
+        ImGuiWindowFlags_NoResize              |
+        ImGuiWindowFlags_NoMove                |
+        ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus            |
+        ImGuiWindowFlags_NoBackground;
+
+    ImGui::Begin("##DockSpace", nullptr, flags);
+    ImGui::PopStyleVar(3);
+
+    const ImGuiID dockId = ImGui::GetID("MainDockSpace");
+    // PassthruCentralNode can steal/disable splitter hit-testing on some drivers / layouts — keep default.
+    ImGui::DockSpace(dockId, ImVec2(0.0f, 0.0f));
+
+    // Older / hand-edited imgui.ini files can persist ImGuiDockNodeFlags_NoResize on splits; that makes
+    // the sidebar (and other dock splits) impossible to drag. Clear those locks on the live tree each frame.
+    if (ImGuiDockNode* dockRoot = ImGui::DockBuilderGetNode(dockId))
+    {
+        dockRoot->SharedFlags &= ~(ImGuiDockNodeFlags_NoResize | ImGuiDockNodeFlags_NoResizeX |
+                                   ImGuiDockNodeFlags_NoResizeY);
+        clearImGuiDockNodeResizeLocks(dockRoot);
+    }
+
+    // Check for an explicit reset request (e.g. "Reset Layout" button).
+    const bool forceRebuild = tanim::IsLayoutResetRequested();
+    if (forceRebuild) {
+        layoutBuilt_ = false;
+        tanim::ClearLayoutResetRequest();
+    }
+
+    if (!layoutBuilt_) {
+        // On a forced reset we always rebuild; otherwise skip if imgui.ini has a layout.
+        ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockId);
+        const bool hasSavedLayout = !forceRebuild && node && !node->IsLeafNode();
+        if (!hasSavedLayout) {
+            ImGui::DockBuilderRemoveNode(dockId);
+            ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(dockId, vp->WorkSize);
+
+            // Left sidebar (22%): controls + callbacks
+            ImGuiID left, mainArea;
+            ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.22f, &left, &mainArea);
+
+            ImGuiID leftTop, leftBot;
+            ImGui::DockBuilderSplitNode(left, ImGuiDir_Up, 0.75f, &leftTop, &leftBot);
+
+            // Main area: viewport (top 58%) | editor strip (bottom 42%)
+            ImGuiID viewportNode, editorStrip;
+            ImGui::DockBuilderSplitNode(mainArea, ImGuiDir_Up, 0.58f, &viewportNode, &editorStrip);
+
+            ImGui::DockBuilderDockWindow("Viewport",          viewportNode);
+            ImGui::DockBuilderDockWindow("Timeline Controls", leftTop);
+            ImGui::DockBuilderDockWindow("Callbacks",         leftBot);
+
+            // Tanim fills the editor strip — must be called BEFORE DockBuilderFinish.
+            tanim::BuildEditorLayout(editorStrip);
+
+            ImGui::DockBuilderFinish(dockId);
+        }
+        layoutBuilt_ = true;
+    }
+
+    ImGui::End();
+}
+
+// ─── 3D Viewport ─────────────────────────────────────────────────────────────
+void ofApp::renderSceneToViewport() {
+    // Dear ImGui may leave GL_SCISSOR_TEST enabled from a previous frame's draw;
+    // scissor coordinates are for the default framebuffer and can clip all FBO draws.
+    const GLboolean scissorsOn = glIsEnabled(GL_SCISSOR_TEST);
+    if (scissorsOn) {
+        glDisable(GL_SCISSOR_TEST);
+    }
+
+    viewport_.begin();
+
+    // ofBackgroundGradient draws without writing depth, so the depth attachment
+    // stays undefined unless cleared — depth-tested 3D can disappear entirely.
+    ofClear(20, 24, 32);
+    ofBackgroundGradient(ofColor(20, 24, 32), ofColor(8, 10, 14), OF_GRADIENT_LINEAR);
+    drawScene3d();
+
+    viewport_.end();
+
+    if (scissorsOn) {
+        glEnable(GL_SCISSOR_TEST);
+    }
+}
+
+void ofApp::drawViewportWindow() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(900.0f, 600.0f), ImGuiCond_FirstUseEver);
+    const bool visible = ImGui::Begin(
+        "Viewport", nullptr,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+
+    if (visible) {
+        ImGuiIO& io          = ImGui::GetIO();
+        viewportFbScale_.x = (io.DisplayFramebufferScale.x > 0.001f) ? io.DisplayFramebufferScale.x : 1.0f;
+        viewportFbScale_.y = (io.DisplayFramebufferScale.y > 0.001f) ? io.DisplayFramebufferScale.y : 1.0f;
+
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        if (avail.x > 4.0f && avail.y > 4.0f) {
+            // Same-frame sizing: avail is ImGui logical units × framebuffer scale = pixel-ish FBO size.
+            const int rw =
+                std::clamp(static_cast<int>(std::lround(static_cast<float>(avail.x * viewportFbScale_.x))),
+                           2, std::max(2, ofGetWidth()));
+            const int rh =
+                std::clamp(static_cast<int>(std::lround(static_cast<float>(avail.y * viewportFbScale_.y))),
+                           2, std::max(2, ofGetHeight()));
+            if (rw != static_cast<int>(viewport_.getWidth()) || rh != static_cast<int>(viewport_.getHeight())) {
+                resizeViewport(rw, rh);
+            }
+            // Render after docking layout knows the panel size (avoids stale 1‑frame allocations).
+            renderSceneToViewport();
+
+            const ofTexture& vt = viewport_.getTexture();
+            if (vt.getTextureData().textureTarget == GL_TEXTURE_2D && vt.texData.textureID != 0) {
+                ImGui::Image(GetImTextureID(vt), avail, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+            } else {
+                ImGui::TextUnformatted("Viewport FBO texture is unavailable (needs GL_TEXTURE_2D).");
+            }
+        }
+    }
+
+    ImGui::End();
+}
+
+// ─── Callbacks panel ─────────────────────────────────────────────────────────
+void ofApp::drawCallbacksWindow() {
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 120.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Callbacks");
+    ImGui::Text("Last bool:  %s", lastBoolEvent_.c_str());
+    ImGui::Text("Last bang:  %s", lastBangEvent_.c_str());
+    ImGui::Text("Bang count: %llu", static_cast<unsigned long long>(bangCounter_));
+    ImGui::End();
+}
+
+// ─── Scene ───────────────────────────────────────────────────────────────────
 void ofApp::setupParameters() {
     parameters_.setName("Cube Parameters");
-    parameters_.add(pPosition_.set("Position", {0.0f, 0.0f, 0.0f}, {-300.0f, -240.0f, -300.0f}, {300.0f, 240.0f, 300.0f}));
-    parameters_.add(pRotationDeg_.set("Rotation", {0.0f, 0.0f, 0.0f}, {-360.0f, -720.0f, -360.0f}, {360.0f, 720.0f, 360.0f}));
+    parameters_.add(pPosition_.set("Position",
+        {0.0f, 0.0f, 0.0f}, {-300.0f, -240.0f, -300.0f}, {300.0f, 240.0f, 300.0f}));
+    parameters_.add(pRotationDeg_.set("Rotation",
+        {0.0f, 0.0f, 0.0f}, {-360.0f, -720.0f, -360.0f}, {360.0f, 720.0f, 360.0f}));
     parameters_.add(pToggle_.set("Visible", true));
     parameters_.add(pBang_.set("Bang"));
 }
 
 void ofApp::drawScene3d() {
-    const glm::vec3 position = timelineManager_.getPosition();
-    const glm::vec3 rotationDeg = timelineManager_.getRotationDeg();
-    const bool visible = timelineManager_.isToggleEnabled();
+    const glm::vec3 pos    = timelineManager_.getPosition();
+    const glm::vec3 rotDeg = timelineManager_.getRotationDeg();
+    const bool      vis    = timelineManager_.isToggleEnabled();
 
+    const ofRectangle vp(0.0f, 0.0f, viewportSize_.x, viewportSize_.y);
     ofEnableDepthTest();
-    camera_.begin();
+    camera_.begin(vp);
 
+    // Grid
     ofPushStyle();
     ofSetColor(68, 72, 84);
     const float gridSize = 800.0f;
@@ -848,20 +1081,20 @@ void ofApp::drawScene3d() {
     }
     ofPopStyle();
 
+    // Cube
     ofPushMatrix();
-    ofTranslate(position.x, position.y, position.z);
-    ofRotateXDeg(rotationDeg.x);
-    ofRotateYDeg(rotationDeg.y);
-    ofRotateZDeg(rotationDeg.z);
+    ofTranslate(pos.x, pos.y, pos.z);
+    ofRotateXDeg(rotDeg.x);
+    ofRotateYDeg(rotDeg.y);
+    ofRotateZDeg(rotDeg.z);
 
-    const ofColor fill = visible ? ofColor(70, 215, 170) : ofColor(90, 96, 108);
-    const ofColor stroke = visible ? ofColor(225, 250, 240) : ofColor(140, 146, 156);
+    const ofColor fill   = vis ? ofColor(70, 215, 170) : ofColor(90, 96, 108);
+    const ofColor stroke = vis ? ofColor(225, 250, 240) : ofColor(140, 146, 156);
 
-    if (visible) {
+    if (vis) {
         ofSetColor(fill);
         ofDrawBox(0.0f, 0.0f, 0.0f, 140.0f);
     }
-
     ofNoFill();
     ofSetLineWidth(2.0f);
     ofSetColor(stroke);
@@ -870,24 +1103,24 @@ void ofApp::drawScene3d() {
 
     if (bangFlash_ > 0.0f) {
         const float alpha = ofMap(bangFlash_, 0.0f, 1.0f, 0.0f, 180.0f, true);
-        ofSetColor(255, 220, 90, alpha);
+        ofSetColor(255, 220, 90, static_cast<int>(alpha));
         ofDrawSphere(0.0f, 0.0f, 0.0f, 120.0f + bangFlash_ * 60.0f);
     }
 
     ofPopMatrix();
-
     camera_.end();
     ofDisableDepthTest();
 }
 
-void ofApp::onBoolToggle(const std::string& parameterName, bool value) {
-    lastBoolEvent_ = parameterName + " -> " + (value ? "true" : "false");
-    ofLogNotice("ofApp") << "Bool callback: " << lastBoolEvent_;
+// ─── Callbacks ───────────────────────────────────────────────────────────────
+void ofApp::onBoolToggle(const std::string& name, bool value) {
+    lastBoolEvent_ = name + " -> " + (value ? "true" : "false");
+    ofLogNotice("ofApp") << "Bool: " << lastBoolEvent_;
 }
 
-void ofApp::onBang(const std::string& parameterName) {
+void ofApp::onBang(const std::string& name) {
     ++bangCounter_;
-    bangFlash_ = 1.0f;
-    lastBangEvent_ = parameterName + " #" + ofToString(bangCounter_);
-    ofLogNotice("ofApp") << "Bang callback: " << lastBangEvent_;
+    bangFlash_     = 1.0f;
+    lastBangEvent_ = name + " #" + ofToString(bangCounter_);
+    ofLogNotice("ofApp") << "Bang: " << lastBangEvent_;
 }

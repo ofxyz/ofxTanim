@@ -10,6 +10,10 @@
 #include "ImHelpers.h"
 #include "tanim/registry.hpp"
 #include "tanim/sequence_id.hpp"
+#include "tanim/tanim_user.hpp"
+#include "ComponentInspector.h"
+
+#include <imgui.h>
 
 namespace {
 
@@ -55,7 +59,7 @@ tanim::internal::Sequence* addSequenceByField(entt::registry& registry,
                                                const std::string& fieldName) {
     const std::size_t beforeCount = timelineData.m_sequences.size();
     const auto& components = tanim::internal::GetRegistry().GetComponents();
-    const std::string structName = tanim::internal::GetStructName<DemoAnimComponent>();
+    const std::string structName = "DemoAnimComponent";
 
     for (const auto& component : components) {
         if (component.m_struct_name != structName) {
@@ -132,8 +136,15 @@ void configureBangPulseSequence(tanim::internal::Sequence& seq) {
 
 }  // namespace
 
-VISITABLE_STRUCT(DemoAnimComponent, toggle, value01, index08, bangPulse);
-TANIM_REFLECT_NO_REGISTER(DemoAnimComponent, toggle, value01, index08, bangPulse);
+// Register animatable fields once. This specialization is shared by the
+// Inspector UI, Tanim, and ofxEnTTStateCollector.
+template<>
+inline void inspector::registerProperties(DemoAnimComponent& c, inspector::ComponentInspector& ci) {
+    ci.addProperty("toggle",    &c.toggle);
+    ci.addProperty("value01",   &c.value01, 0.f, 1.f);
+    ci.addProperty("index08",   &c.index08, 0,   8);
+    ci.addProperty("bangPulse", &c.bangPulse);
+}
 
 namespace tanim {
 
@@ -240,7 +251,7 @@ void TimelineDemoManager::setup(const std::string& imguiIniPath) {
     imguiIniPath_ = imguiIniPath;
 
     tanim::Init();
-    tanim::RegisterComponent<DemoAnimComponent>();
+    tanim::RegisterComponent<DemoAnimComponent>("DemoAnimComponent");
 
     if (!imguiIniPath_.empty()) {
         ImGui::GetIO().IniFilename = imguiIniPath_.c_str();
@@ -283,8 +294,7 @@ void TimelineDemoManager::drawControlsAndTimeline() {
         return;
     }
 
-    ImGui::SetNextWindowPos(ImVec2(24.0f, 90.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(420.0f, 430.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 520.0f), ImGuiCond_FirstUseEver);
 
     ImGui::Begin("Example Controls");
     ImGui::Text("Timeline + ofParameter bridge");
@@ -357,6 +367,14 @@ void TimelineDemoManager::drawControlsAndTimeline() {
         if (binding.parameter != nullptr) {
             ofxImGui::AddParameter(*binding.parameter, 120.0f);
         }
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset UI layout")) {
+        tanim::ResetEditorLayout();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Restore default docking (Example Controls left, Demo Scene center, timeline editor below)");
     }
 
     ImGui::Separator();
@@ -688,6 +706,7 @@ void ofApp::setup() {
     loadWindowLayout();
 
     gui_.setup(nullptr, true, ImGuiConfigFlags_ViewportsEnable | ImGuiConfigFlags_DockingEnable);
+    ImGui::GetIO().ConfigWindowsMoveFromTitleBarOnly = true;
 
     setupParameters();
 
@@ -704,6 +723,8 @@ void ofApp::draw() {
     drawScene();
 
     gui_.begin();
+    beginDockSpace();
+    drawDemoScenePanel();
     timelineManager_.drawControlsAndTimeline();
     gui_.end();
 }
@@ -803,6 +824,74 @@ void ofApp::drawScene() {
     ofSetColor(250);
     ofDrawBitmapString("bang count: " + ofToString(timelineManager_.getBangCount()), left + 70.0f, yBang + 5.0f);
     ofPopStyle();
+}
+
+void ofApp::beginDockSpace() {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,   0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(0.0f, 0.0f));
+
+    constexpr ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoDocking             |
+        ImGuiWindowFlags_NoTitleBar            |
+        ImGuiWindowFlags_NoCollapse            |
+        ImGuiWindowFlags_NoResize              |
+        ImGuiWindowFlags_NoMove                |
+        ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus            |
+        ImGuiWindowFlags_NoBackground;
+
+    ImGui::Begin("##DockSpaceExampleBasic", nullptr, flags);
+    ImGui::PopStyleVar(3);
+
+    const ImGuiID dockId = ImGui::GetID("MainDockSpaceBasic");
+    ImGui::DockSpace(dockId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
+
+    const bool forceRebuild = tanim::IsLayoutResetRequested();
+    if (forceRebuild) {
+        layoutBuilt_ = false;
+        tanim::ClearLayoutResetRequest();
+    }
+
+    if (!layoutBuilt_) {
+        ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockId);
+        const bool hasSavedLayout = !forceRebuild && node && !node->IsLeafNode();
+        if (!hasSavedLayout) {
+            ImGui::DockBuilderRemoveNode(dockId);
+            ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(dockId, vp->WorkSize);
+
+            // Left: parameter / transport panel. Main: scene (top) + Tanim strip (bottom).
+            ImGuiID left, mainArea;
+            ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.28f, &left, &mainArea);
+
+            ImGuiID editorStrip, sceneNode;
+            ImGui::DockBuilderSplitNode(mainArea, ImGuiDir_Down, 0.42f, &editorStrip, &sceneNode);
+
+            ImGui::DockBuilderDockWindow("Example Controls", left);
+            ImGui::DockBuilderDockWindow("Demo Scene",      sceneNode);
+            tanim::BuildEditorLayout(editorStrip);
+
+            ImGui::DockBuilderFinish(dockId);
+        }
+        layoutBuilt_ = true;
+    }
+
+    ImGui::End();
+}
+
+void ofApp::drawDemoScenePanel() {
+    ImGui::SetNextWindowSize(ImVec2(880.0f, 520.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Demo Scene", nullptr,
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+    ImGui::TextDisabled("OpenGL demo output is drawn on the full window behind the UI.");
+    ImGui::Spacing();
+    ImGui::TextWrapped("Double-click a track's colored bar in the Timeliner (bottom) to expand the Keyframe Editor and Curves.");
+    ImGui::End();
 }
 
 void ofApp::saveWindowLayout() const {

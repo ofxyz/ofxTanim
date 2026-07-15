@@ -8,7 +8,7 @@
 #include "tanim/sequence.hpp"
 #include "tanim/user_override.hpp"
 
-#include <nlohmann/json.hpp>
+#include "ofJson.h"
 
 namespace tanim::internal
 {
@@ -23,6 +23,8 @@ struct Impl
     bool m_preview{true};
     bool m_force_editor_timeline_frame{false};
     int m_forced_editor_timeline_frame{-1};
+    ImGuiID m_editor_dock_node{0};
+    bool    m_layout_reset_requested{false};
 };
 
 std::unique_ptr<Impl> g_impl{nullptr};
@@ -161,180 +163,139 @@ void Pause(ComponentData& cdata) { Timeline::Pause(cdata); }
 
 void Stop(ComponentData& cdata) { Timeline::Stop(cdata); }
 
+void BuildEditorLayout(ImGuiID nodeId)
+{
+    // Store so ResetEditorLayout() can ask the app to rebuild.
+    g_impl->m_editor_dock_node = nodeId;
+
+    // Pure split-and-dock — no RemoveNode/AddNode/Finish.
+    // This function must be called while a DockBuilder session is open on the
+    // parent dockspace; the caller is responsible for DockBuilderFinish().
+    // Left: Player info (top) + Curve inspector (bottom)
+    ImGuiID edLeft, edCentreRight;
+    ImGui::DockBuilderSplitNode(nodeId, ImGuiDir_Left, 0.15f, &edLeft, &edCentreRight);
+
+    // Right: Timeline settings (top) + Keyframe Editor (bottom)
+    ImGuiID edRight, edCentre;
+    ImGui::DockBuilderSplitNode(edCentreRight, ImGuiDir_Right, 0.22f, &edRight, &edCentre);
+
+    // Left column
+    ImGuiID edPlayer, edCurves;
+    ImGui::DockBuilderSplitNode(edLeft, ImGuiDir_Up, 0.35f, &edPlayer, &edCurves);
+
+    // Right column
+    ImGuiID edTimeline, edExpanded;
+    ImGui::DockBuilderSplitNode(edRight, ImGuiDir_Up, 0.40f, &edTimeline, &edExpanded);
+
+    // "timeliner" now contains both the transport bar (as a menu bar) and the lane editor.
+    ImGui::DockBuilderDockWindow("timeliner",        edCentre);
+    ImGui::DockBuilderDockWindow("Player",           edPlayer);
+    ImGui::DockBuilderDockWindow("curves",           edCurves);
+    ImGui::DockBuilderDockWindow("timeline",         edTimeline);
+    ImGui::DockBuilderDockWindow("Keyframe Editor###expanded sequence", edExpanded);
+}
+
+void ResetEditorLayout()        { g_impl->m_layout_reset_requested = true; }
+bool IsLayoutResetRequested()   { return g_impl->m_layout_reset_requested; }
+void ClearLayoutResetRequest()  { g_impl->m_layout_reset_requested = false; }
+
 void Draw()
 {
     if (g_impl->m_editor_timeline_data == nullptr || g_impl->m_editor_component_data == nullptr)
     {
-        ImGui::Begin("Tanim", nullptr, ImGuiWindowFlags_NoCollapse);
-        ImGui::Text("No Timeline is open for editing.");
-        ImGui::End();
-
         return;
     }
 
     TimelineData& tdata = *g_impl->m_editor_timeline_data;
     ComponentData& cdata = *g_impl->m_editor_component_data;
 
-#pragma region TanimAndDockspace
-
-    ImGui::Begin("Tanim", nullptr, ImGuiWindowFlags_NoCollapse);
-
-    ImGuiID dockspace_id = ImGui::GetID("TanimDockSpace");
-    ImGui::DockSpace(dockspace_id, ImVec2(0, 0), ImGuiDockNodeFlags_None);
-
-    static bool initialized{false};
-
-    if (!initialized)
-    {
-        ImGui::DockBuilderRemoveNode(dockspace_id);
-        ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetWindowSize());
-
-        // Split main into left, center, right
-        ImGuiID dock_left, dock_center_right;
-        ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.20f, &dock_left, &dock_center_right);
-
-        ImGuiID dock_center, dock_right;
-        ImGui::DockBuilderSplitNode(dock_center_right, ImGuiDir_Right, 0.20f, &dock_right, &dock_center);
-
-        // Split center into top (controls) and bottom (timeliner)
-        ImGuiID dock_center_top, dock_center_bottom;
-        ImGui::DockBuilderSplitNode(dock_center, ImGuiDir_Up, 0.13f, &dock_center_top, &dock_center_bottom);
-
-        // Split left column into top/bottom
-        ImGuiID dock_left_top, dock_left_bottom;
-        ImGui::DockBuilderSplitNode(dock_left, ImGuiDir_Up, 0.30f, &dock_left_top, &dock_left_bottom);
-
-        // Split right column into top/bottom
-        ImGuiID dock_right_top, dock_right_bottom;
-        ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Up, 0.40f, &dock_right_top, &dock_right_bottom);
-
-        // Dock windows
-        ImGui::DockBuilderDockWindow("controls", dock_center_top);
-        ImGui::DockBuilderDockWindow("timeliner", dock_center_bottom);
-        ImGui::DockBuilderDockWindow("Player", dock_left_top);
-        ImGui::DockBuilderDockWindow("curves", dock_left_bottom);
-        ImGui::DockBuilderDockWindow("timeline", dock_right_top);
-        ImGui::DockBuilderDockWindow("expanded sequence", dock_right_bottom);
-
-        ImGui::DockBuilderFinish(dockspace_id);
-
-        initialized = true;
-    }
-
-    ImGui::End();
-
-#pragma endregion
-
-    //*****************************************************
-
-#pragma region controls
-    {
-        ImGui::Begin("controls", nullptr, ImGuiWindowFlags_NoMove);
-
-        if (!Timeline::GetPlayerPlaying(cdata))
-        {
-            if (ImGui::Button("Play", {50, 0}))
-            {
-                Timeline::ResetPlayerTime(cdata);
-                Timeline::Play(cdata);
-            }
-        }
-        else
-        {
-            if (ImGui::Button("Pause", {50, 0}))
-            {
-                Timeline::Pause(cdata);
-            }
-        }
-
-        ImGui::SameLine();
-        ImGui::Text(" | ");
-        ImGui::SameLine();
-
-        ImGui::PushItemWidth(100);
-
-        const bool disabled = Timeline::GetPlayerPlaying(cdata);
-        if (disabled)
-        {
-            ImGui::BeginDisabled();
-            g_impl->m_preview = true;
-        }
-        if (ImGui::Checkbox("Preview", &g_impl->m_preview))
-        {
-            if (g_impl->m_preview == false)
-            {
-                g_impl->m_preview = true;
-                const int frame_before = Timeline::GetPlayerFrame(tdata, cdata);
-                Timeline::ResetPlayerTime(cdata);
-                Sample(*g_impl->m_editor_registry, g_impl->m_editor_entity_datas, tdata, cdata);
-                g_impl->m_preview = false;
-                Timeline::SetPlayerTimeFromFrame(tdata, cdata, frame_before);
-            }
-        }
-        if (disabled)
-        {
-            ImGui::EndDisabled();
-        }
-
-        ImGui::SameLine();
-        ImGui::Text(" | ");
-        ImGui::SameLine();
-
-        ImGui::DragInt("Samples", &tdata.m_player_samples, 0.1f, Timeline::GetMinFrame(tdata));
-        tdata.m_player_samples = ImMax(1, tdata.m_player_samples);
-
-        ImGui::SameLine();
-        ImGui::Text(" | ");
-        ImGui::SameLine();
-
-        int player_frame = Timeline::GetPlayerFrame(tdata, cdata);
-        if (ImGui::InputInt("Frame", &player_frame))
-        {
-            player_frame = ImMax(0, player_frame);
-            Timeline::SetPlayerTimeFromFrame(tdata, cdata, player_frame);
-            if (g_impl->m_preview)
-            {
-                Sample(*g_impl->m_editor_registry, g_impl->m_editor_entity_datas, tdata, cdata);
-            }
-        }
-
-        // ImGui::SameLine();
-        // ImGui::Text(" | ");
-        // ImGui::SameLine();
-
-        // ImGui::DragInt("MaxFrame", &tdata.m_max_frame, 0.1f, Timeline::GetMinFrame(tdata));
-        // tdata.m_max_frame = ImMax(1, tdata.m_max_frame);
-
-        // ImGui::SameLine();
-        // ImGui::Text(" | ");
-        // ImGui::SameLine();
-        //
-        // ImGui::SameLine();
-        // if (ImGui::DragFloat("SnapY", &m_snap_y_value, 0.01f))
-        // {
-        //     m_snap_y_value = ImMax(0.0f, m_snap_y_value);
-        //     Timeline::EditSnapY(tdata, m_snap_y_value);
-        // }
-
-        ImGui::PopItemWidth();
-
-        ImGui::End();
-    }
-#pragma endregion
-
     //*****************************************************
 
 #pragma region timeliner
     {
-        ImGui::Begin("timeliner", nullptr, ImGuiWindowFlags_NoMove);
+        // Transport controls live in the menu bar — thin and always visible.
+        ImGui::Begin("timeliner", nullptr, ImGuiWindowFlags_MenuBar);
 
-        constexpr int flags = TIMELINER_CHANGE_FRAME | TIMELINER_DELETE_SEQUENCE | TIMELINER_EDIT_STARTEND;
+        if (ImGui::BeginMenuBar())
+        {
+            // Play / Pause
+            if (!Timeline::GetPlayerPlaying(cdata))
+            {
+                if (ImGui::Button("Play"))
+                {
+                    Timeline::ResetPlayerTime(cdata);
+                    Timeline::Play(cdata);
+                }
+            }
+            else
+            {
+                if (ImGui::Button("Pause"))
+                    Timeline::Pause(cdata);
+            }
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+
+            // Preview toggle (disabled while playing)
+            const bool playing = Timeline::GetPlayerPlaying(cdata);
+            if (playing)
+            {
+                ImGui::BeginDisabled();
+                g_impl->m_preview = true;
+            }
+            if (ImGui::Checkbox("Preview", &g_impl->m_preview))
+            {
+                if (!g_impl->m_preview)
+                {
+                    g_impl->m_preview = true;
+                    const int frame_before = Timeline::GetPlayerFrame(tdata, cdata);
+                    Timeline::ResetPlayerTime(cdata);
+                    Sample(*g_impl->m_editor_registry, g_impl->m_editor_entity_datas, tdata, cdata);
+                    g_impl->m_preview = false;
+                    Timeline::SetPlayerTimeFromFrame(tdata, cdata, frame_before);
+                }
+            }
+            if (playing)
+                ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+
+            ImGui::SetNextItemWidth(80.0f);
+            ImGui::DragInt("##Samples", &tdata.m_player_samples, 0.1f, Timeline::GetMinFrame(tdata));
+            tdata.m_player_samples = ImMax(1, tdata.m_player_samples);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Samples per second");
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+
+            int player_frame = Timeline::GetPlayerFrame(tdata, cdata);
+            ImGui::SetNextItemWidth(60.0f);
+            if (ImGui::InputInt("##Frame", &player_frame, 0, 0))
+            {
+                player_frame = ImMax(0, player_frame);
+                Timeline::SetPlayerTimeFromFrame(tdata, cdata, player_frame);
+                if (g_impl->m_preview)
+                    Sample(*g_impl->m_editor_registry, g_impl->m_editor_entity_datas, tdata, cdata);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Current frame");
+
+            ImGui::EndMenuBar();
+        }
+
+        // Timeline lane editor
+        constexpr int timelinerFlags = TIMELINER_CHANGE_FRAME | TIMELINER_DELETE_SEQUENCE | TIMELINER_EDIT_STARTEND;
 
         int player_frame = Timeline::GetPlayerFrame(tdata, cdata);
         const int player_frame_before = player_frame;
 
-        Timeliner(tdata, &player_frame, &tdata.m_expanded, &tdata.m_selected_sequence, &tdata.m_first_frame, flags);
+        Timeliner(tdata, &player_frame, &tdata.m_expanded, &tdata.m_selected_sequence, &tdata.m_first_frame, timelinerFlags);
+
         int player_frame_after;
         if (g_impl->m_force_editor_timeline_frame)
         {
@@ -347,13 +308,11 @@ void Draw()
         }
 
         if ((!g_impl->m_is_engine_in_play_mode && !Timeline::GetPlayerPlaying(cdata)) ||
-            (player_frame_before != player_frame_after))
+            player_frame_before != player_frame_after)
         {
             Timeline::SetPlayerTimeFromFrame(tdata, cdata, player_frame_after);
             if (g_impl->m_preview)
-            {
                 Sample(*g_impl->m_editor_registry, g_impl->m_editor_entity_datas, tdata, cdata);
-            }
         }
 
         ImGui::End();
@@ -364,7 +323,7 @@ void Draw()
 
 #pragma region timeline
 
-    ImGui::Begin("timeline", nullptr, ImGuiWindowFlags_NoMove);
+    ImGui::Begin("timeline");
 
     helpers::InspectEnum(tdata.m_playback_type);
 
@@ -426,7 +385,9 @@ void Draw()
 
 #pragma region ExpandedSequence
 
-    ImGui::Begin("expanded sequence", nullptr, ImGuiWindowFlags_NoMove);
+    // "###expanded sequence" keeps the ini-file ID stable while showing a
+    // friendlier display name in the tab bar.
+    ImGui::Begin("Keyframe Editor###expanded sequence");
 
     bool has_expanded_seq = false;
     int expanded_seq_idx = -1;
@@ -437,6 +398,16 @@ void Draw()
         expanded_seq_idx = idx.value();
         auto opt_entity = Timeline::FindEntity(tdata, cdata, expanded_seq_idx);
         expanded_seq_entity = opt_entity;
+    }
+
+    if (!has_expanded_seq)
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("No track expanded.");
+        ImGui::Spacing();
+        ImGui::TextWrapped(
+            "Double-click the colored segment (clip bar) of a track in the Timeliner "
+            "to expand it here and in Curves. Double-click again to collapse.");
     }
 
     if (has_expanded_seq)
@@ -574,7 +545,17 @@ void Draw()
 
 #pragma region curves
 
-    ImGui::Begin("curves", nullptr, ImGuiWindowFlags_NoMove);
+    ImGui::Begin("curves");
+
+    if (!has_expanded_seq)
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("No track expanded.");
+        ImGui::Spacing();
+        ImGui::TextWrapped(
+            "Double-click a track's colored segment in the Timeliner to expand it; "
+            "then this panel shows the inspector for that sequence.");
+    }
 
     if (has_expanded_seq)
     {
@@ -615,7 +596,7 @@ void Draw()
 
 #pragma region player
 
-    ImGui::Begin("Player", nullptr, ImGuiWindowFlags_NoMove);
+    ImGui::Begin("Player");
 
     ImGui::Text("Real Time:    %.3fs", Timeline::GetPlayerRealTime(cdata));
     ImGui::Text("Sample Time:  %.3fs", Timeline::GetPlayerSampleTime(tdata, cdata));

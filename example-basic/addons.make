@@ -1,5 +1,5 @@
 ofxEnTT
 ofxImGui
-ofxSurfingHelpers
-ofxSurfingImGui
+ofxEnTTInspector
 ofxTanim
+ofxAssimpModelLoader

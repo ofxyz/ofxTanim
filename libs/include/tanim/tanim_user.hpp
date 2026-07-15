@@ -1,5 +1,7 @@
 #pragma once
 
+#include <imgui.h>
+
 #include "tanim/registry.hpp"
 #include "tanim/user_data.hpp"
 
@@ -11,8 +13,29 @@ namespace tanim
 void Init();
 
 /// Call once every frame, between your application's ImGui::NewFrame() & ImGui::EndFrame().
-/// Draws the Tanim editor window & its contents.
+/// Draws all Tanim editor sub-windows (controls, timeliner, Player, curves, timeline,
+/// expanded sequence). Each window is a plain, free-floating ImGui window that can be
+/// docked into any dockspace — typically the application's main dockspace.
 void Draw();
+
+/// Dock all Tanim editor sub-windows into @p nodeId using the built-in default split layout.
+/// Call this once during initial setup (when no imgui.ini exists), and whenever the user
+/// wants to reset the editor layout back to defaults.
+/// @param nodeId  Any ImGui dockspace node ID — usually a sub-node you've already carved
+///                out of your main dockspace with DockBuilderSplitNode().
+void BuildEditorLayout(ImGuiID nodeId);
+
+/// Request a layout reset. Sets an internal flag that the app should check each
+/// frame (via IsLayoutResetRequested()) and respond to by rebuilding its dockspace
+/// with BuildEditorLayout(). Cleared by ClearLayoutResetRequest().
+void ResetEditorLayout();
+
+/// Returns true if ResetEditorLayout() has been called and the app has not yet
+/// cleared the request.
+bool IsLayoutResetRequested();
+
+/// Call after the app has honoured a layout reset request.
+void ClearLayoutResetRequest();
 
 /// Call once every frame, with your other ECS system updates.
 /// Updates the data in the Tanim editor window.
@@ -103,14 +126,20 @@ void Stop(ComponentData& cdata);
 /// @param serialized_string The string that was given to you by tanim::Serialize
 void Deserialize(TimelineData& tdata, const std::string& serialized_string);
 
-/// When for any reason you had used TANIM_REFLECT_NO_REGISTER to reflect a component to Tanim, you have to call this function
-/// once for that component, at some point during your application's initialization phase. There is no need to call this for the
-/// component if you had used TANIM_REFLECT instead.
-/// @tparam T The type of the comopnent you had reflected with TANIM_REFLECT_NO_REGISTER
+/// Register a component type so Tanim can animate its fields.
+///
+/// Before calling this, specialise inspector::registerProperties<T> to describe
+/// which fields are animatable (see ComponentInspector.h from ofxEnTTInspector).
+///
+/// @tparam T          The component struct type to register.
+/// @param structName  Stable name stored in serialized JSON. Providing an
+///                    explicit human-readable string is strongly recommended so
+///                    that saved timelines survive refactors. Defaults to the
+///                    compiler's typeid name if omitted.
 template <typename T>
-void RegisterComponent()
+void RegisterComponent(const std::string& structName = typeid(T).name())
 {
-    internal::GetRegistry().RegisterComponent<T>();
+    internal::GetRegistry().RegisterComponent<T>(structName);
 }
 
 }  // namespace tanim

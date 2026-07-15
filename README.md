@@ -1,76 +1,179 @@
 # ofxTanim
 
-### `ofxTanim` is a WIP openFrameworks addon that integrates the [tanim](https://github.com/hegworks/tanim) timeline/editor workflow with OF projects.  
-### The project is still in its early stages, and will probably end up abandoned as a coding experiment involving Agents and OF. It was developed in 2-3 sessions using `OpenAI Codex` new Windows app with the `Codex GPT 5.3` model.  
-### My idea was to pass `ofParameters` to a manager class that would internally handle the rendering of `ImGui` and the Talim classes.  
+Bezier-curve keyframe timeline animation for openFrameworks ECS apps, integrated with the shared [ofxEnTTInspector](../ofxEnTTInspector) reflection system.
 
-----
+Based on [hegworks/tanim](https://github.com/hegworks/tanim).
 
-It is designed for projects that want:
-- timeline-based animation tracks,
-- runtime playback,
-- editor controls through ImGui,
-- reflection-based binding of component fields.
+---
 
-## Requirements
+![example](example-minimal/preview.png)
 
-- openFrameworks `0.12.1`.
-- Tested in Windows 11 / Visual Studio 2026.
-- `ofxImGui`
-- `ofxEnTT`
+---
 
-Some examples may use additional addons (for example `ofxSurfingImGui`).
+## Dependencies
 
-## Repository Layout
+| Addon | Why |
+|-------|-----|
+| `ofxEnTT` | entt::registry |
+| `ofxImGui` | Curve editor and UI |
+| `ofxEnTTInspector` | Shared reflection (`registerProperties`, `PinDataType`, `ReflectedProperty`) |
 
-- `src/` -> addon integration sources.
-- `libs/include/tanim/` -> core `tanim` headers.
-- `libs/external/` -> bundled third-party headers used by `tanim`.
-- `docs/` -> integration docs and type support references.
-- `example-basic/` -> reference demo for timeline + parameter bridge.
-- `example-minimal/` -> minimal cube demo using `glm::vec3` position/rotation and callbacks.
+> **Removed dependencies:** `visit_struct`, `nlohmann/json` (bundled copy). JSON serialization is now via `ofJSON` (OF's built-in nlohmann). Reflection is via `ofxEnTTInspector`.
 
-## Quick Start
+---
 
-1. Add `ofxTanim` to your OF project.
-2. Ensure `ofxImGui` and `ofxEnTT` are also added.
-3. Register your animatable component fields with Tanim reflection macros.
-4. Create/open timeline data and drive playback in `update()`.
+## Migration from TANIM\_REFLECT
 
-For a working baseline, start from:
-- `addons/ofxTanim/example-basic`
-- `addons/ofxTanim/example-minimal`
+**Old approach** (removed):
+```cpp
+// At global scope in a header:
+TANIM_REFLECT(my_comp, x, y, z);
 
-## Example Notes
+// At startup:
+tanim::RegisterComponent<my_comp>();
+```
 
-### `example-basic`
-- Demonstrates timeline setup and parameter synchronization patterns.
-- Includes a richer manager flow for bool/float/int/bang style controls.
+**New approach** — one specialization serves Inspector, Tanim, and StateCollector:
+```cpp
+// In my_comp_inspector.h (include wherever these tools are used):
+#pragma once
+#include "ComponentInspector.h"
+#include "my_comp.h"
 
-### `example-minimal`
-- Focused demo with a simple cube scene.
-- Animates `glm::vec3` position and `glm::vec3` rotation.
-- Uses `SurfingTimelineManager` to auto-register supported `ofParameter` values.
-- Emits callbacks for bool toggles and bang triggers.
+template<>
+inline void inspector::registerProperties(my_comp& c, inspector::ComponentInspector& ci) {
+    ci.addProperty("x", &c.x, -100.f, 100.f);
+    ci.addProperty("y", &c.y, -100.f, 100.f);
+    ci.addProperty("z", &c.z, -100.f, 100.f);
+}
 
-## Build
+// At startup (explicit name recommended for JSON stability):
+tanim::RegisterComponent<my_comp>("my_comp");
+```
 
-Use the standard openFrameworks workflow:
+The `structName` parameter is stored in serialized JSON. It should remain **stable across refactors** — if you rename the struct, also update the string, or existing saved timelines will not load correctly.
 
-- Generate/build with Project Generator and your IDE, or
-- Build using the provided OF make/msbuild flow inside each example folder.
+---
 
-`example-minimal` includes `build-msbuild.ps1` to locate `MSBuild.exe` automatically on Windows.
+## Quick start
 
-## Documentation
+```cpp
+#include "ofxTanim.h"
+#include "my_comp_inspector.h"   // specializes inspector::registerProperties<my_comp>
 
-Detailed references are available in:
-- `docs/README.md`
-- `docs/integration-reference.md`
-- `docs/supported-types.md`
-- `docs/ui-shortcuts.md`
+void ofApp::setup() {
+    tanim::Init();
+    tanim::RegisterComponent<my_comp>("my_comp");
+}
 
-## Notes
+void ofApp::update() {
+    // Advance all playing timelines:
+    tanim::UpdateTimeline(registry, entityDatas, timelineData, componentData, ofGetLastFrameTime());
+}
 
-- The addon relies on OF's `glm`/JSON environment and avoids local duplicate includes to reduce version conflicts.
-- If you update external dependencies, keep the OF toolchain and addon dependencies in sync.
+void ofApp::draw() {
+    // Inside ImGui frame:
+    tanim::Draw();          // draws the curve editor window
+    tanim::UpdateEditor(ofGetLastFrameTime());
+}
+
+// When you want to open the editor for a specific entity:
+tanim::OpenForEditing(registry, entityDatas, timelineData, componentData);
+```
+
+---
+
+## Supported field types
+
+| PinDataType | Curves | Notes |
+|-------------|--------|-------|
+| `Float` | 1 | Smooth Bezier |
+| `Int` | 1 | Linear, integer-snapped |
+| `Bool` | 1 | Constant (step) |
+| `Vec2` | 2 | X, Y |
+| `Vec3` | 3 | X, Y, Z |
+| `Vec4` | 4 | X, Y, Z, W |
+| `Quat` | 5 | W, X, Y, Z + Spins curve |
+| `Color` | 4 | R, G, B, A normalized 0–1 in curves |
+
+`String`, `Trigger`, and `Any` are not animatable and will be silently skipped.
+
+---
+
+## Serialization
+
+```cpp
+// Save:
+std::string json = tanim::Serialize(timelineData);
+ofSaveFile("timeline.json", json);
+
+// Load:
+std::string json = ofLoadFileAsString("timeline.json");
+tanim::Deserialize(timelineData, json);
+```
+
+Serialized format version 2 (unchanged from original). JSON keys use the explicit struct name passed to `RegisterComponent`.
+
+---
+
+## API reference
+
+```cpp
+tanim::Init();
+tanim::RegisterComponent<T>("struct_name");
+tanim::Draw();
+tanim::UpdateEditor(dt);
+tanim::OpenForEditing(registry, entityDatas, tdata, cdata);
+tanim::CloseEditor();
+
+tanim::EnterPlayMode();
+tanim::StartTimeline(tdata, cdata);
+tanim::UpdateTimeline(registry, entityDatas, tdata, cdata, dt);
+tanim::StopTimeline(cdata);
+tanim::ExitPlayMode();
+
+tanim::Play(cdata);
+tanim::Pause(cdata);
+tanim::Stop(cdata);
+bool playing = tanim::IsPlaying(cdata);
+
+std::string json = tanim::Serialize(tdata);
+tanim::Deserialize(tdata, json);
+```
+
+---
+
+## ofxKit integration (src/kit/)
+
+`src/kit/` ships **ofxAnimationKit** — glue for running Tanim inside an
+[ofxKit](../ofxKit) runtime (like `ofxBulletKit.h` inside ofxBullet). The
+sources are guarded by `__has_include("Runtime.h")` and compile to empty
+translation units unless ofxKit is in `addons.make`, so standalone ofxTanim
+apps are unaffected.
+
+```cpp
+#include "kit/ofxAnimationKit.h"
+
+ofxAnimationKit::AnimationKit m_animKit;
+
+void ofApp::setup() {
+    m_animKit.registerWith(ofkitty::runtime());
+    m_animKit.bridge().bindRegistry(ofkitty::runtime().registry());
+    m_animKit.bridge().registerUid("entity.cube", myEntity);
+}
+```
+
+`AnimationBridge` owns the uid → `entt::entity` map and supplies
+`tanim::FindEntityOfUID` (plus `LogError` / `LogInfo`) so Tanim can resolve
+animated entities from timeline data. Kit apps must **not** define those
+overrides themselves.
+
+`registerWith()` also registers a **gui-phase** `TanimEditorSystem` on the
+ofxKit Runtime (`drawPhase = "gui"`), which calls `tanim::UpdateEditor(dt)`
+while the ImGui frame is open — no per-frame app call needed. Toggle it from
+the Debug window's Systems list (`system().setEnabled`).
+
+Register animatable components with `tanim::RegisterComponent<T>()` and wire
+`inspector::registerProperties<T>` in ofxEnTTInspector before opening a
+timeline. `registerWith()` also registers a dockable "Timeline" window
+(placeholder host; `tanim::Draw()` hosting is a future revision).

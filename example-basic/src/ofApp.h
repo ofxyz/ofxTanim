@@ -128,6 +128,8 @@ public:
 private:
     void setupParameters();
     void drawScene();
+    void beginDockSpace();
+    void drawDemoScenePanel();
 
     void saveWindowLayout() const;
     void loadWindowLayout();
@@ -143,4 +145,5 @@ private:
     TimelineDemoManager timelineManager_;
 
     std::string appLayoutPath_;
+    bool layoutBuilt_{false};
 };
